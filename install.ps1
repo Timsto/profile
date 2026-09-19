@@ -1,25 +1,19 @@
 <#
-    Windows-Setup: Programme, PowerShell-Module, Profil.
+    Windows setup: apps, PowerShell modules, profile, theme.
 
-    In einer PowerShell ALS ADMINISTRATOR:
+    Run in an elevated PowerShell:
         irm https://raw.githubusercontent.com/Timsto/profile/main/install.ps1 | iex
 
-    Ohne Adminrechte laeuft es auch, ueberspringt dann aber alles mit
-    Scope 'machine'. Mehrfach ausfuehrbar - vorhandene Pakete werden
-    uebersprungen.
+    Safe to re-run. Without admin rights, 'machine' scoped packages are skipped.
 #>
 
 $ErrorActionPreference = 'Stop'
 
-# Downloads am Ende. Muessen auf dieses Repo zeigen.
 $RawBase    = 'https://raw.githubusercontent.com/Timsto/profile/main'
-$ProfileUrl = "$RawBase/profile.ps1"
+$ProfileUrl = "$RawBase/powershell-profile.ps1"
 $ThemeUrl   = "$RawBase/themes/emodipt.omp.json"
 $ThemeName  = 'emodipt.omp.json'
 
-# ---------------------------------------------------------------- Paketliste --
-# Scope 'machine' = alle User, braucht Admin. 'user' = nur aktueller User;
-# noetig fuer MSIX/Store-Pakete, die kein machine-Scope koennen.
 $packages = @(
     @{ Id = 'Microsoft.PowerShell'                ; Scope = 'machine' }
     @{ Id = 'Microsoft.WindowsTerminal'           ; Scope = 'user'    }
@@ -38,8 +32,6 @@ $packages = @(
     @{ Id = 'WhatsApp.WhatsApp'                   ; Scope = 'user'    }
 )
 
-# Bewusst nicht das Meta-Modul Microsoft.Graph: 40+ Submodule, ~600 MB,
-# bremst jeden Modul-Autoload. Nur Authentication + die Workloads.
 $modules = @(
     'Terminal-Icons'
     'CompletionPredictor'
@@ -57,13 +49,13 @@ $modules = @(
 function Step { param($t) Write-Host "`n>> $t" -ForegroundColor Cyan }
 function Ok   { param($t) Write-Host "   OK   $t" -ForegroundColor Green }
 function Skip { param($t) Write-Host "   --   $t" -ForegroundColor DarkGray }
-function Fail { param($t) Write-Host "   FEHLER $t" -ForegroundColor Red }
+function Fail { param($t) Write-Host "   FAIL $t" -ForegroundColor Red }
 
-# ------------------------------------------------------------ Voraussetzungen --
-Step 'Voraussetzungen'
+# --------------------------------------------------------------- Prerequisites
+Step 'Prerequisites'
 
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    throw 'winget fehlt. Im Microsoft Store "App Installer" installieren, dann erneut.'
+    throw 'winget not found. Install "App Installer" from the Microsoft Store, then retry.'
 }
 Ok "winget $((winget --version).Trim())"
 
@@ -74,21 +66,21 @@ $isAdmin = (New-Object Security.Principal.WindowsPrincipal(
 if ($isAdmin) {
     Ok 'Administrator'
 } else {
-    Write-Warning 'Keine Adminrechte - Pakete mit Scope "machine" werden uebersprungen.'
+    Write-Warning 'Not elevated - packages scoped "machine" will be skipped.'
 }
 
 $null = winget source update --accept-source-agreements 2>&1
 
-# ------------------------------------------------------------------- Pakete --
+# -------------------------------------------------------------------- Packages
 $failed = @()
 
 foreach ($p in $packages) {
     Step $p.Id
 
-    if ($p.Scope -eq 'machine' -and -not $isAdmin) { Skip 'braucht Admin'; continue }
+    if ($p.Scope -eq 'machine' -and -not $isAdmin) { Skip 'needs admin'; continue }
 
     $null = winget list --id $p.Id --exact --accept-source-agreements 2>&1
-    if ($LASTEXITCODE -eq 0) { Skip 'bereits installiert'; continue }
+    if ($LASTEXITCODE -eq 0) { Skip 'already installed'; continue }
 
     $wingetArgs = @(
         'install', '--id', $p.Id, '--exact', '--source', 'winget'
@@ -98,25 +90,23 @@ foreach ($p in $packages) {
     $out = & winget @wingetArgs 2>&1
 
     if ($LASTEXITCODE -eq 0) {
-        Ok 'installiert'
+        Ok 'installed'
     } else {
-        # 0x8A15002B: kein Installer fuer diesen Scope -> nochmal ohne --scope
         $retry = $wingetArgs | Where-Object { $_ -ne '--scope' -and $_ -ne $p.Scope }
         $null  = & winget @retry 2>&1
         if ($LASTEXITCODE -eq 0) {
-            Ok 'installiert (ohne Scope-Vorgabe)'
+            Ok 'installed (no scope)'
         } else {
-            Fail "Exitcode $LASTEXITCODE"
+            Fail "exit code $LASTEXITCODE"
             $out | Select-Object -Last 3 | ForEach-Object { Write-Host "        $_" -ForegroundColor DarkRed }
             $failed += $p.Id
         }
     }
 }
 
-# --------------------------------------------------------------- pwsh finden --
+# ----------------------------------------------------------------- PowerShell 7
 Step 'PowerShell 7'
 
-# PATH neu einlesen - nach frischer Installation kennt die Session pwsh nicht.
 $env:Path = @(
     [Environment]::GetEnvironmentVariable('Path','Machine')
     [Environment]::GetEnvironmentVariable('Path','User')
@@ -131,14 +121,13 @@ if (-not $pwsh) {
 if ($pwsh) {
     Ok (& $pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()')
 } else {
-    Fail 'pwsh nicht gefunden. Fenster schliessen, neu oeffnen, Skript erneut ausfuehren.'
+    Fail 'pwsh not found. Close this window, open a new one, run again.'
     return
 }
 
-# ------------------------------------------------------------------- Module --
-# Immer ueber pwsh 7 installieren. -Scope CurrentUser zeigt in 5.1 und 7 auf
-# verschiedene Ordner; aus 5.1 installierte Module waeren in pwsh 7 unsichtbar.
-Step 'PowerShell-Module'
+# --------------------------------------------------------------------- Modules
+# Always via pwsh 7: CurrentUser scope resolves to a different path in 5.1.
+Step 'Modules'
 
 foreach ($m in $modules) {
     $have = & $pwsh -NoProfile -Command "[bool](Get-Module -ListAvailable -Name '$m')"
@@ -154,10 +143,9 @@ foreach ($m in $modules) {
     if ($LASTEXITCODE -eq 0) { Ok $m } else { Fail $m; $failed += $m }
 }
 
-# ------------------------------------------------------------ Profil + Theme --
-Step 'Profil'
+# --------------------------------------------------------------------- Profile
+Step 'Profile'
 
-# Pfad von pwsh selbst erfragen - beruecksichtigt OneDrive-Umleitung von Documents.
 $target     = & $pwsh -NoProfile -Command '$PROFILE.CurrentUserCurrentHost'
 $profileDir = Split-Path $target -Parent
 
@@ -167,21 +155,18 @@ try {
     if (Test-Path $target) {
         $backup = "$target.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
         Copy-Item $target $backup -Force
-        Ok "Backup: $(Split-Path $backup -Leaf)"
+        Ok "backup: $(Split-Path $backup -Leaf)"
     }
-    # -OutFile statt Invoke-RestMethod: RestMethod wuerde JSON parsen und bei
-    # .ps1 je nach Content-Type Ueberraschungen liefern.
     Invoke-WebRequest -Uri $ProfileUrl -OutFile $target -UseBasicParsing -ErrorAction Stop
     Ok $target
 } catch {
-    Fail "Profil-Download fehlgeschlagen: $($_.Exception.Message)"
-    Write-Host "   Manuell:  iwr '$ProfileUrl' -OutFile `"$target`"" -ForegroundColor DarkYellow
+    Fail "profile download failed: $($_.Exception.Message)"
+    Write-Host "   Manual:  iwr '$ProfileUrl' -OutFile `"$target`"" -ForegroundColor DarkYellow
 }
 
-Step 'oh-my-posh Theme'
+# ----------------------------------------------------------------------- Theme
+Step 'Theme'
 
-# Neben das Profil, nicht in POSH_THEMES_PATH: der Pfad aendert sich bei jedem
-# oh-my-posh-Update und der Ordner wird dabei ueberschrieben.
 $themeDir    = Join-Path $profileDir 'themes'
 $themeTarget = Join-Path $themeDir $ThemeName
 
@@ -189,35 +174,33 @@ try {
     if (-not (Test-Path $themeDir)) { New-Item -ItemType Directory -Path $themeDir -Force | Out-Null }
     Invoke-WebRequest -Uri $ThemeUrl -OutFile $themeTarget -UseBasicParsing -ErrorAction Stop
 
-    # Kaputtes JSON faellt sonst erst beim naechsten Shell-Start auf.
     $null = Get-Content -Raw $themeTarget | ConvertFrom-Json
     Ok $themeTarget
 
-    # Init-Cache verwerfen, sonst rendert das Profil weiter das alte Theme.
     $cache = Join-Path $env:LOCALAPPDATA 'omp-init.ps1'
     if (Test-Path $cache) { Remove-Item $cache -Force }
 } catch {
-    Fail "Theme fehlgeschlagen: $($_.Exception.Message)"
-    Write-Host '   Profil faellt auf $env:POSH_THEMES_PATH zurueck.' -ForegroundColor DarkYellow
+    Fail "theme failed: $($_.Exception.Message)"
+    Write-Host '   Profile falls back to $env:POSH_THEMES_PATH.' -ForegroundColor DarkYellow
 }
 
-# ---------------------------------------------------------------- Nerd Font --
+# ------------------------------------------------------------------- Nerd Font
 Step 'Nerd Font'
 
 if (Get-Command oh-my-posh -ErrorAction SilentlyContinue) {
     $fonts = (New-Object -ComObject Shell.Application).NameSpace(0x14).Items() |
              ForEach-Object { $_.Name }
     if ($fonts -match 'Nerd Font') {
-        Skip 'bereits vorhanden'
+        Skip 'already installed'
     } else {
         oh-my-posh font install CascadiaCode --user
         Ok 'CascadiaCode Nerd Font'
     }
 } else {
-    Skip 'oh-my-posh nicht im PATH - Shell neu starten, dann: oh-my-posh font install'
+    Skip 'oh-my-posh not on PATH - restart shell, then: oh-my-posh font install'
 }
 
-# ----------------------------------------------------------------- Git-Basics --
+# ------------------------------------------------------------------------- Git
 Step 'Git'
 
 if (Get-Command git -ErrorAction SilentlyContinue) {
@@ -228,40 +211,40 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
         'core.longpaths'     = 'true'
     }.GetEnumerator() | ForEach-Object {
         if (git config --global --get $_.Key 2>$null) {
-            Skip "$($_.Key)"
+            Skip $_.Key
         } else {
             git config --global $_.Key $_.Value
             Ok "$($_.Key) = $($_.Value)"
         }
     }
 } else {
-    Skip 'git nicht im PATH - Shell neu starten'
+    Skip 'git not on PATH - restart shell'
 }
 
-# ---------------------------------------------------------------------- Ende --
+# ------------------------------------------------------------------------ Done
 if ($failed) {
-    Write-Host "`nFehlgeschlagen:" -ForegroundColor Red
+    Write-Host "`nFailed:" -ForegroundColor Red
     $failed | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
     Write-Host @'
 
-Bei "Installer hash does not match" hinkt das winget-Manifest dem Download
-hinterher - betrifft oefter DeepL und Sysinternals. Alternativen:
+On "Installer hash does not match" the winget manifest lags the download.
+Alternatives:
   winget install 9P7KNL5RWT25 -s msstore     # Sysinternals Suite
   winget install 9NKSQGP7F2NH -s msstore     # WhatsApp
-  winget install <Id> --ignore-security-hash # geht nur OHNE Admin
+  winget install <Id> --ignore-security-hash # non-elevated only
 
 '@ -ForegroundColor DarkYellow
 }
 
 Write-Host @"
 
-Fertig. Neues Windows Terminal oeffnen (pwsh-Profil).
+Done. Open a new Windows Terminal tab (pwsh).
 
-Noch von Hand:
-  Font face auf "CascadiaCode Nerd Font" setzen
+Manual steps:
+  Set font face to "CascadiaCode Nerd Font"
   git config --global user.name  "Tim"
   git config --global user.email "..."
-  1Password: SSH-Agent aktivieren
-  VS Code Insiders: Settings Sync anmelden
+  1Password: enable SSH agent
+  VS Code Insiders: sign in for Settings Sync
 
 "@ -ForegroundColor Cyan
