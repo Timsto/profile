@@ -25,7 +25,7 @@
             "style": "agnoster"
           },
           "style": "plain",
-          "template": " {{ .Path }} on",
+          "template": " {{ .Path }}",
           "type": "path"
         },
         {
@@ -35,7 +35,7 @@
             "branch_identical_icon": "\uf14a"
           },
           "style": "plain",
-          "template": " {{ .HEAD }} ",
+          "template": " on {{ .HEAD }} ",
           "type": "git"
         },
         {

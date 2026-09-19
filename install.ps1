@@ -36,7 +36,6 @@ $modules = @(
     'Terminal-Icons'
     'CompletionPredictor'
     'Microsoft.WinGet.Client'
-    'Microsoft.WinGet.CommandNotFound'
     'Microsoft.Graph.Authentication'
     'Microsoft.Graph.Identity.DirectoryManagement'
     'Microsoft.Graph.Identity.SignIns'
