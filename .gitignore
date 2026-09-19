@@ -1,0 +1,23 @@
+# Backups, die 02-terminal.ps1 neben den Zieldateien anlegt
+*.bak-*
+*.bak.*
+
+# oh-my-posh Init-Cache
+omp-init.ps1
+
+# Lokale Overrides, die nicht ins Repo gehoeren
+*.local.ps1
+local/
+
+# winget export
+pkgs.json
+
+# Windows
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Editoren
+.vs/
+.idea/
+*.swp
