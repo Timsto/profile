@@ -9,6 +9,12 @@
 
 $ErrorActionPreference = 'Stop'
 
+# winget uses non-zero exit codes for "not found". Without this, PowerShell 7
+# turns those into terminating errors whenever the preference is enabled.
+if (Test-Path Variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
+
 $RawBase    = 'https://raw.githubusercontent.com/Timsto/profile/main'
 $ProfileUrl = "$RawBase/powershell-profile.ps1"
 $ThemeUrl   = "$RawBase/themes/emodipt.omp.json"
@@ -129,8 +135,9 @@ if ($pwsh) {
 Step 'Modules'
 
 foreach ($m in $modules) {
-    $have = & $pwsh -NoProfile -Command "[bool](Get-Module -ListAvailable -Name '$m')"
-    if ($have -eq 'True') { Skip $m; continue }
+    $check = "[bool](Get-Module -ListAvailable -Name '$m')"
+
+    if ((& $pwsh -NoProfile -Command $check) -eq 'True') { Skip $m; continue }
 
     & $pwsh -NoProfile -Command "
         if (Get-Command Install-PSResource -EA SilentlyContinue) {
@@ -139,7 +146,14 @@ foreach ($m in $modules) {
             Install-Module -Name '$m' -Scope CurrentUser -Force -AllowClobber
         }"
 
-    if ($LASTEXITCODE -eq 0) { Ok $m } else { Fail $m; $failed += $m }
+    # Verify by presence: a failed Install-Module is non-terminating and still
+    # leaves the exit code at 0.
+    if ((& $pwsh -NoProfile -Command $check) -eq 'True') {
+        Ok $m
+    } else {
+        Fail $m
+        $failed += $m
+    }
 }
 
 # --------------------------------------------------------------------- Profile
@@ -150,16 +164,42 @@ $profileDir = Split-Path $target -Parent
 
 if (-not (Test-Path $profileDir)) { New-Item -ItemType Directory -Path $profileDir -Force | Out-Null }
 
-try {
-    if (Test-Path $target) {
-        $backup = "$target.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-        Copy-Item $target $backup -Force
-        Ok "backup: $(Split-Path $backup -Leaf)"
+# Download to a temp file and compare: re-running must not pile up backups.
+function Install-Downloaded {
+    param(
+        [string] $Url,
+        [string] $Target,
+        [switch] $Backup
+    )
+
+    $tmp = [IO.Path]::GetTempFileName()
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $tmp -UseBasicParsing -ErrorAction Stop
+
+        if ((Test-Path $Target) -and
+            (Get-FileHash $tmp).Hash -eq (Get-FileHash $Target).Hash) {
+            Skip "$Target (unchanged)"
+            return $true
+        }
+
+        if ($Backup -and (Test-Path $Target)) {
+            $b = "$Target.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+            Copy-Item $Target $b -Force
+            Ok "backup: $(Split-Path $b -Leaf)"
+        }
+
+        Move-Item $tmp $Target -Force
+        Ok $Target
+        return $true
+    } catch {
+        Fail "$Url - $($_.Exception.Message)"
+        return $false
+    } finally {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
     }
-    Invoke-WebRequest -Uri $ProfileUrl -OutFile $target -UseBasicParsing -ErrorAction Stop
-    Ok $target
-} catch {
-    Fail "profile download failed: $($_.Exception.Message)"
+}
+
+if (-not (Install-Downloaded -Url $ProfileUrl -Target $target -Backup)) {
     Write-Host "   Manual:  iwr '$ProfileUrl' -OutFile `"$target`"" -ForegroundColor DarkYellow
 }
 
@@ -169,17 +209,19 @@ Step 'Theme'
 $themeDir    = Join-Path $profileDir 'themes'
 $themeTarget = Join-Path $themeDir $ThemeName
 
-try {
-    if (-not (Test-Path $themeDir)) { New-Item -ItemType Directory -Path $themeDir -Force | Out-Null }
-    Invoke-WebRequest -Uri $ThemeUrl -OutFile $themeTarget -UseBasicParsing -ErrorAction Stop
+if (-not (Test-Path $themeDir)) { New-Item -ItemType Directory -Path $themeDir -Force | Out-Null }
 
-    $null = Get-Content -Raw $themeTarget | ConvertFrom-Json
-    Ok $themeTarget
+if (Install-Downloaded -Url $ThemeUrl -Target $themeTarget) {
+    try {
+        # Broken JSON would otherwise only surface at the next shell start.
+        $null = Get-Content -Raw $themeTarget | ConvertFrom-Json
 
-    $cache = Join-Path $env:LOCALAPPDATA 'omp-init.ps1'
-    if (Test-Path $cache) { Remove-Item $cache -Force }
-} catch {
-    Fail "theme failed: $($_.Exception.Message)"
+        $cache = Join-Path $env:LOCALAPPDATA 'omp-init.ps1'
+        if (Test-Path $cache) { Remove-Item $cache -Force }
+    } catch {
+        Fail "theme is not valid JSON: $($_.Exception.Message)"
+    }
+} else {
     Write-Host '   Profile falls back to $env:POSH_THEMES_PATH.' -ForegroundColor DarkYellow
 }
 
